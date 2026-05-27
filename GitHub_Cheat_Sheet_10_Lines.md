@@ -26,3 +26,11 @@ git pull origin main
 git merge First-Branch-Trans-Track-Vdata
 git push origin main
 ```
+
+# Safe clean up steps after the branches are merged to main.
+```bash
+git switch main
+git fetch origin
+git branch -d First-Branch-Trans-Track-Vdata
+git push origin --delete First-Branch-Trans-Track-Vdata
+```
