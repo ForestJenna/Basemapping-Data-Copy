@@ -20,7 +20,9 @@ git status
 ```
 
 # To get the local to agree with the main on GitHub
+```bash
 git switch main
 git pull origin main
 git merge First-Branch-Trans-Track-Vdata
 git push origin main
+```
