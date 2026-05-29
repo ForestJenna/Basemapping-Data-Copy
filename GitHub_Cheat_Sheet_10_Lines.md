@@ -34,3 +34,10 @@ git fetch origin
 git branch -d First-Branch-Trans-Track-Vdata
 git push origin --delete First-Branch-Trans-Track-Vdata
 ```
+
+# Setting user name
+```bash
+git config --global user.name "ForestJenna"
+git config --global user.email "jenna.williams@usda.gov"
+git commit --amend --reset-author
+```
