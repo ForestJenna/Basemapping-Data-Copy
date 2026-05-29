@@ -1,4 +1,6 @@
 '''
+DEPRACATED: This script is no longer maintained. USE COPY-AND-TRACK-VTPK-DATA.PY INSTEAD
+
 PURPOSE:
 The purpose of this script is to copy datasets from a source file geodatabase to a target file geodatabase, with robust logging, 
 status tracking, and error handling. It is designed to be run in a single process. The script will continue to process 
