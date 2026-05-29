@@ -1,3 +1,24 @@
+'''
+PURPOSE:
+The purpose of this script is to copy datasets from a source file geodatabase to a target file geodatabase, with robust logging, 
+status tracking, and error handling. It is designed to be run in a single process. The script will continue to process 
+all items even if some fail, and will produce a summary of results at the end. Optionally, it can perform cleanup operations
+on the target geodatabase after copying is complete. The script is intended to be run in an environment with ArcPy available.
+
+You can run this script repeatedly as it will skip copying items that are already current in the target location based on a 
+signature comparison. The status of each item is tracked in a JSON file, and detailed logs are written to a timestamped log file.
+
+SET UP:
+1. Update the global settings at the top of the script to specify your source and target geodatabases, log file location, and other parameters.
+2. Run the script in an environment where ArcPy is available 
+
+RESULTS:
+- A new file geodatabase will be created at the target location if it does not already exist.
+- Datasets from the source geodatabase will be copied to the target geodatabase, with progress and results logged.
+- The status of each item is tracked in a JSON file, allowing the script to skip items that are already current.
+'''
+
+
 import arcpy
 import ctypes
 import datetime

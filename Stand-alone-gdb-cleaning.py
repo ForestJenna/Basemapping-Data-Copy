@@ -1,3 +1,21 @@
+'''
+PUROPOSE:
+This script performs a series of cleaning operations on all feature classes within a specified file geodatabase (GDB). 
+The operations include repairing geometry, removing and adding spatial indexes, recalculating extents, and calculating default grid 
+indexes. The script logs the progress and any errors encountered during the cleaning process.
+
+USAGE:
+1. Set the `CLEAN_GDB_PATH` variable to the path of the target GDB you want to clean.
+2. Set the `LOG_FILE` variable to the desired path for the log file.
+3. Adjust the boolean flags (e.g., `RUN_REPAIR_GEOMETRY`) to enable or disable specific cleaning operations as needed.
+4. Run the script in an environment with access to the specified GDB and where ArcPy is available.
+
+RESULTS:
+The script will generate a log file with timestamps for each operation performed on the feature classes, 
+including any errors encountered. 
+
+'''
+
 import arcpy
 import datetime
 import os
@@ -7,8 +25,8 @@ import time
 # ============================================================
 # Global Settings (EDIT THESE)
 # ============================================================
-CLEAN_GDB_PATH = r"E:\2026_vtpk\Geodatabase\vTPK_Fresh5Data_2026.gdb"
-LOG_FILE = r"E:\2026_vtpk\Geodatabase\Fresh5DataCleaning_Log.txt"
+CLEAN_GDB_PATH = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\JWilliams\2026_DataCopy\GDB\Missing3.gdb"
+LOG_FILE = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\JWilliams\2026_DataCopy\GDB\Fresh5DataCleaning_Log.txt"
 
 RUN_REPAIR_GEOMETRY = True
 RUN_REMOVE_SPATIAL_INDEX = True
