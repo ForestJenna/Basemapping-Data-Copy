@@ -1,5 +1,5 @@
 # Basemapping Data Copy Repo
-These scripts can be used to manage geodatabase copy and cleaning. Each script is explained below. All script have logging and are intended to be run in an environment with ArcPy available.
+These scripts can be used to manage geodatabase copy and cleaning. All script have logging and are intended to be run in an environment with ArcPy available.
 
 If cleaning operations are applied these are the geoprocessing tools that will be run on each data layer. Repairing geometry, removing and adding spatial indexes, recalculating extents, and calculating default grid indexes.
 
