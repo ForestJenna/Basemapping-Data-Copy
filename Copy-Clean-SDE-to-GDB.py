@@ -37,13 +37,14 @@ from collections import defaultdict
 # ============================================================
 # Global Settings (EDIT THESE)
 # ============================================================
-VTPK_APRX = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\JWilliams\2026_vtpk\APRX.aprx"
+VTPK_APRX = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\DataDevelopment\FeedbackApplication\FSBasemap_Feedback_TEMPLATE.aprx"
 PDF_APRX = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\JWilliams\2026_DataCopy\PDF_aprx_05282026.aprx"
 
-VTPK_MAP_NAME = "CurrentVTPK"
+OUTPUT_FOLDER = r"I:\2026_Basemap_Data_forVTPKandPDFs\Data"
+
+VTPK_MAP_NAME = "VTPK_June_2026"
 PDF_MAP_NAME = "Map"
 
-OUTPUT_FOLDER = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\JWilliams\2026_DataCopy\Testing"
 VTPK_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "vtpk_Layers_inTOC.txt")
 PDF_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "pdf_Layers_inTOC.txt")
 MASTER_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "layers_for_copy.txt")
