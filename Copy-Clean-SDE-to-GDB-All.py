@@ -845,11 +845,11 @@ if __name__ == "__main__":
 	run_failed = 0
 
 	try:
-		log(f"Run log file: {ACTIVE_LOG_FILE}")
-		log_storage_location("Target GDB", TARGET_GDB)
+		# log(f"Run log file: {ACTIVE_LOG_FILE}")
+		# log_storage_location("Target GDB", TARGET_GDB)
 
-		build_layer_lists()
-		pause_for_master_list_review()
+		# build_layer_lists()
+		# pause_for_master_list_review()
 
 		run_failed = copy_master_layers_from_file()
 		log("=== GDB Copy Completed ===")
