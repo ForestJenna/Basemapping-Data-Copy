@@ -47,7 +47,7 @@ FSTOPO_PR = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\
 ADMIN_SERIES = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\Admin_Series\AdminSeries.aprx"
 ALASKA_FOREST_SERIES = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\ForestSeries_Alaska\AlaskaForestSeriesMaps.aprx"
 
-OUTPUT_FOLDER = r"I:\2026_Basemap_Data_forVTPKandPDFs\Data"
+OUTPUT_FOLDER = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\JWilliams\2026_DataCopy\GDB"
 
 VTPK_MAP_NAME = "VTPK_June_2026"
 #PDF_MAP_NAME = "Map"
@@ -71,7 +71,8 @@ FSTOPO_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "FSTopo_Layers_inTOC.txt")
 FSTOPO_PR_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "FSTopoPR_Layers_inTOC.txt")
 ADMIN_SERIES_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "AdminSeries_Layers_inTOC.txt")
 ALASKA_FOREST_SERIES_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "AlaskaForestSeries_Layers_inTOC.txt")
-MASTER_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "layers_for_copy.txt")
+MASTER_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "MASTER_layers_list_for_copy.txt")
+FAILED_COPY_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "FAILED_layers_list_for_copy.txt")
 
 TARGET_GDB = os.path.join(OUTPUT_FOLDER, "vTPK_and_PDF_Data_2026.gdb")
 LOG_FILE = os.path.join(OUTPUT_FOLDER, "copy_log.txt")
@@ -223,19 +224,64 @@ def log_storage_location(label, path):
 # APRX Layer List Helpers
 # ============================================================
 def get_known_sde_source(datasource):
-	lower_source = datasource.lower()
+    lower_source = datasource.lower()
 
-	if "instance=wo_ddcdw" in lower_source or "dataset=wo_ddcdw." in lower_source or "wo_ddcdw as viewer.sde" in lower_source:
-		return "wo_ddcdw", ddcdw_source
+    if "instance=wo_ddcdw" in lower_source or "dataset=wo_ddcdw." in lower_source or "wo_ddcdw as viewer.sde" in lower_source:
+        return "wo_ddcdw", ddcdw_source
 
-	if "instance=wo_fsbasemap" in lower_source or "dataset=wo_fsbasemap." in lower_source or "wo_fsbasemap as viewer.sde" in lower_source:
-		return "wo_fsbasemap", fsbasemap_source
+    if "instance=wo_fsbasemap" in lower_source or "dataset=wo_fsbasemap." in lower_source or "wo_fsbasemap as viewer.sde" in lower_source:
+        return "wo_fsbasemap", fsbasemap_source
 
-	if "instance=sde_edw" in lower_source or "server=sde_edw" in lower_source or "dataset=s_usa." in lower_source or "edw_dev_default_as_myself.sde" in lower_source:
-		return "SDE_EDW", edw_source
+    if "instance=sde_edw" in lower_source or "server=sde_edw" in lower_source or "dataset=s_usa." in lower_source or "edw_dev_default_as_myself.sde" in lower_source:
+        return "SDE_EDW", edw_source
 
-	return None, None
+    return None, None
 
+def prompt_copy_sources():
+    print("\nSelect data source(s) to copy:")
+    print("  1) EDW only")
+    print("  2) DDCDW only")
+    print("  3) FSBasemap only")
+    print("  4) All (EDW + DDCDW + FSBasemap)")
+
+    while True:
+        choice = input("Enter 1, 2, 3, or 4: ").strip().lower()
+
+        if choice in {"1", "edw"}:
+            return {"EDW"}
+        if choice in {"2", "ddcdw"}:
+            return {"DDCDW"}
+        if choice in {"3", "fsbasemap", "fs"}:
+            return {"FSBasemap"}
+        if choice in {"4", "all", "a"}:
+            return set(SOURCE_ORDER)
+
+        print("Invalid selection. Please enter 1, 2, 3, or 4.")
+
+def prompt_run_mode():
+    print("\nSelect run mode:")
+    print("  1) Copy data")
+    print("  2) Cleanup only")
+
+    while True:
+        choice = input("Enter 1 or 2: ").strip().lower()
+        if choice in {"1", "copy", "c"}:
+            return "copy"
+        if choice in {"2", "cleanup", "clean", "cleanup only"}:
+            return "cleanup_only"
+        print("Invalid selection. Please enter 1 or 2.")
+
+def filter_selected_sources(source_dict, other_sources, selected_sources):
+    filtered_source_dict, filtered_other_sources = make_empty_layer_report()
+
+    for source_name in SOURCE_ORDER:
+        if source_name not in selected_sources:
+            continue
+        filtered_source_dict[source_name]["source_path"] = source_dict[source_name]["source_path"]
+        filtered_source_dict[source_name]["layers"] = set(source_dict[source_name]["layers"])
+
+    # Intentionally exclude 'Other' for this run mode.
+    return filtered_source_dict, filtered_other_sources
 
 def is_guid_name(value):
 	parts = value.split("-")
@@ -693,80 +739,110 @@ def build_copy_items(master_source_dict, master_other_sources):
 	return items, failed_inspection
 
 
-def copy_master_layers_from_file():
-	master_source_dict, master_other_sources = parse_layer_report(MASTER_LAYER_LIST_TXT)
-	status = load_status()
+def copy_master_layers_from_file(selected_sources=None):
+    master_source_dict, master_other_sources = parse_layer_report(MASTER_LAYER_LIST_TXT)
 
-	if not arcpy.Exists(TARGET_GDB):
-		log(f"\n Creating target gdb: {TARGET_GDB}")
-		arcpy.CreateFileGDB_management(os.path.dirname(TARGET_GDB), os.path.basename(TARGET_GDB))
+    if selected_sources:
+        master_source_dict, master_other_sources = filter_selected_sources(
+            master_source_dict,
+            master_other_sources,
+            selected_sources
+        )
+        log(f"Selected sources for copy: {', '.join([s for s in SOURCE_ORDER if s in selected_sources])}")
 
-	items, failed_inspection = build_copy_items(master_source_dict, master_other_sources)
+    status = load_status()
 
-	total_items = len(items)
-	log(f"Total items to process: {total_items}")
-	log("Using 1 worker. Largest datasets are copied first based on source row count.")
+    if not arcpy.Exists(TARGET_GDB):
+        log(f"\n Creating target gdb: {TARGET_GDB}")
+        arcpy.CreateFileGDB_management(os.path.dirname(TARGET_GDB), os.path.basename(TARGET_GDB))
 
-	completed = 0
-	copied = 0
-	skipped = 0
-	failed = len(failed_inspection)
-	run_start = time.time()
+    items, failed_inspection = build_copy_items(master_source_dict, master_other_sources)
 
-	print("\n Copying items...")
+    failed_source_dict, failed_other_sources = make_empty_layer_report()
+    for master_layer, _ in failed_inspection:
+        source_name = master_layer["source_name"]
+        source_path = master_layer["source_path"]
+        dataset_name = master_layer["dataset_name"]
+        if source_name in failed_source_dict:
+            failed_source_dict[source_name]["source_path"] = source_path
+            failed_source_dict[source_name]["layers"].add(dataset_name)
+        else:
+            failed_other_sources[source_path]["source_path"] = source_path
+            failed_other_sources[source_path]["layers"].add(dataset_name)
 
-	for item in items:
-		completed += 1
-		progress_bar(completed, total_items)
+    total_items = len(items)
+    log(f"Total items to process: {total_items}")
+    log("Using 1 worker. Largest datasets are copied first based on source row count.")
 
-		is_current, target_signature = destination_is_current(item)
-		if is_current:
-			skipped += 1
-			status["items"][item["src"]] = {
-				"name": item["name"],
-				"source_name": item["source_name"],
-				"dataset_name": item["dataset_name"],
-				"status": "skipped_current",
-				"row_count": item["row_count"],
-				"source_signature": item["source_signature"],
-				"target_signature": target_signature,
-				"elapsed_seconds": 0,
-				"updated_at": datetime.datetime.now().isoformat(),
-			}
-			save_status(status)
-			log(f"SKIPPED CURRENT: {item['name']} | rows={item['row_count']:,}")
-			continue
+    completed = 0
+    copied = 0
+    skipped = 0
+    failed = len(failed_inspection)
+    run_start = time.time()
 
-		log(f"\nSTARTING COPY: {item['name']} ({completed}/{total_items}) | rows={item['row_count']:,}")
-		result = copy_item(item)
-		elapsed = format_elapsed(result["elapsed"])
+    print("\n Copying items...")
 
-		status["items"][item["src"]] = {
-			"name": item["name"],
-			"source_name": item["source_name"],
-			"dataset_name": item["dataset_name"],
-			"status": "success" if result["success"] else "failed",
-			"row_count": item["row_count"],
-			"source_signature": item["source_signature"],
-			"target_signature": result["target_signature"],
-			"elapsed_seconds": result["elapsed"],
-			"updated_at": datetime.datetime.now().isoformat(),
-			"error": result["error"],
-		}
-		save_status(status)
+    for item in items:
+        completed += 1
+        progress_bar(completed, total_items)
 
-		if result["success"]:
-			copied += 1
-			log(f"COPIED: {item['name']} | elapsed={elapsed}")
-		else:
-			failed += 1
-			log(f"FAILED: {item['name']} | elapsed={elapsed} | {result['error']}")
+        is_current, target_signature = destination_is_current(item)
+        if is_current:
+            skipped += 1
+            status["items"][item["src"]] = {
+                "name": item["name"],
+                "source_name": item["source_name"],
+                "dataset_name": item["dataset_name"],
+                "status": "skipped_current",
+                "row_count": item["row_count"],
+                "source_signature": item["source_signature"],
+                "target_signature": target_signature,
+                "elapsed_seconds": 0,
+                "updated_at": datetime.datetime.now().isoformat(),
+            }
+            save_status(status)
+            log(f"SKIPPED CURRENT: {item['name']} | rows={item['row_count']:,}")
+            continue
 
-	total_elapsed = format_elapsed(time.time() - run_start)
-	print("\nCopy complete!")
-	log(f"Summary: copied={copied}, skipped_current={skipped}, failed={failed}, total_elapsed={total_elapsed}")
+        log(f"\nSTARTING COPY: {item['name']} ({completed}/{total_items}) | rows={item['row_count']:,}")
+        result = copy_item(item)
+        elapsed = format_elapsed(result["elapsed"])
 
-	return failed
+        status["items"][item["src"]] = {
+            "name": item["name"],
+            "source_name": item["source_name"],
+            "dataset_name": item["dataset_name"],
+            "status": "success" if result["success"] else "failed",
+            "row_count": item["row_count"],
+            "source_signature": item["source_signature"],
+            "target_signature": result["target_signature"],
+            "elapsed_seconds": result["elapsed"],
+            "updated_at": datetime.datetime.now().isoformat(),
+            "error": result["error"],
+        }
+        save_status(status)
+
+        if result["success"]:
+            copied += 1
+            log(f"COPIED: {item['name']} | elapsed={elapsed}")
+        else:
+            failed += 1
+            if item["source_name"] in failed_source_dict:
+                failed_source_dict[item["source_name"]]["source_path"] = item["source_path"]
+                failed_source_dict[item["source_name"]]["layers"].add(item["dataset_name"])
+            else:
+                failed_other_sources[item["source_path"]]["source_path"] = item["source_path"]
+                failed_other_sources[item["source_path"]]["layers"].add(item["dataset_name"])
+            log(f"FAILED: {item['name']} | elapsed={elapsed} | {result['error']}")
+
+    write_layer_report(FAILED_COPY_LAYER_LIST_TXT, failed_source_dict, failed_other_sources)
+    log(f"Failed copy layer list written to: {FAILED_COPY_LAYER_LIST_TXT}")
+
+    total_elapsed = format_elapsed(time.time() - run_start)
+    print("\nCopy complete!")
+    log(f"Summary: copied={copied}, skipped_current={skipped}, failed={failed}, total_elapsed={total_elapsed}")
+
+    return failed
 
 
 # ============================================================
@@ -839,29 +915,31 @@ def gdb_cleaning(gdb_path):
 # Main Execution
 # ============================================================
 if __name__ == "__main__":
-	if not write_log_line("=== Starting Consolidated APRX Layer List, GDB Copy, and Clean Workflow ===", mode="w"):
-		print(f"WARNING: Could not initialize log file: {ACTIVE_LOG_FILE}", file=sys.stderr)
+    if not write_log_line("=== Starting Consolidated APRX Layer List, GDB Copy, and Clean Workflow ===", mode="w"):
+        print(f"WARNING: Could not initialize log file: {ACTIVE_LOG_FILE}", file=sys.stderr)
 
-	run_failed = 0
+    run_failed = 0
 
-	try:
-		# log(f"Run log file: {ACTIVE_LOG_FILE}")
-		# log_storage_location("Target GDB", TARGET_GDB)
+    try:
+        run_mode = prompt_run_mode()
 
-		# build_layer_lists()
-		# pause_for_master_list_review()
+        if run_mode == "cleanup_only":
+            run_failed = gdb_cleaning(TARGET_GDB)
+            print("\nAll operations complete.")
+            log("=== Cleanup-only operation complete ===")
+        else:
+            selected_sources = prompt_copy_sources()
+            run_failed = copy_master_layers_from_file(selected_sources=selected_sources)
+            log("=== GDB Copy Completed ===")
 
-		run_failed = copy_master_layers_from_file()
-		log("=== GDB Copy Completed ===")
+            if RUN_CLEANUP:
+                run_failed += gdb_cleaning(TARGET_GDB)
 
-		if RUN_CLEANUP:
-			run_failed += gdb_cleaning(TARGET_GDB)
+            print("\nAll operations complete.")
+            log("=== All operations complete ===")
+    except Exception as exc:
+        log(f"FATAL ERROR: {get_error_message(exc)}")
+        sys.exit(1)
 
-		print("\nAll operations complete.")
-		log("=== All operations complete ===")
-	except Exception as exc:
-		log(f"FATAL ERROR: {get_error_message(exc)}")
-		sys.exit(1)
-
-	if run_failed:
-		sys.exit(1)
+    if run_failed:
+        sys.exit(1)
