@@ -21,6 +21,7 @@ RESULTS:
 - Creates the target GDB if it does not exist.
 - Copies master-list datasets from source SDE connections to the target GDB.
 - Tracks copy status in JSON and writes detailed timestamped logs.
+- The cleaning log can hold multiple cleanup runs in the same file. 
 '''
 
 import arcpy
@@ -47,7 +48,7 @@ FSTOPO_PR = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\
 ADMIN_SERIES = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\Admin_Series\AdminSeries.aprx"
 ALASKA_FOREST_SERIES = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\ForestSeries_Alaska\AlaskaForestSeriesMaps.aprx"
 
-OUTPUT_FOLDER = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\JWilliams\2026_DataCopy\GDB"
+OUTPUT_FOLDER = r"I:\2026_Basemap_Data_forVTPKandPDFs\Data"
 
 VTPK_MAP_NAME = "VTPK_June_2026"
 #PDF_MAP_NAME = "Map"
@@ -73,6 +74,7 @@ ADMIN_SERIES_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "AdminSeries_Layers_in
 ALASKA_FOREST_SERIES_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "AlaskaForestSeries_Layers_inTOC.txt")
 MASTER_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "MASTER_layers_list_for_copy.txt")
 FAILED_COPY_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "FAILED_layers_list_for_copy.txt")
+CLEANED_TIME_LOG_TXT = os.path.join(OUTPUT_FOLDER, "cleaned_time_log.txt")
 
 TARGET_GDB = os.path.join(OUTPUT_FOLDER, "vTPK_and_PDF_Data_2026.gdb")
 LOG_FILE = os.path.join(OUTPUT_FOLDER, "copy_log.txt")
@@ -82,7 +84,7 @@ RETRY_ATTEMPTS = 3
 RETRY_DELAY = 3          # seconds between retries
 
 
-RUN_CLEANUP = False      # Enable/disable post-copy cleanup True or False
+RUN_CLEANUP = True      # Enable/disable post-copy cleanup True or False
 
 # Known source geodatabase paths
 edw_source = r"\\usda.net\fs\FS\Reference\GeoTool\agency\AG4SDatabaseConnection\edw_dev_default_as_myself.sde"
@@ -867,48 +869,73 @@ def list_feature_classes_for_cleaning(gdb_path):
 
 
 def gdb_cleaning(gdb_path):
-	arcpy.env.overwriteOutput = False
-	arcpy.env.workspace = gdb_path
-	feature_class_paths = list_feature_classes_for_cleaning(gdb_path)
+    arcpy.env.overwriteOutput = False
+    arcpy.env.workspace = gdb_path
+    feature_class_paths = list_feature_classes_for_cleaning(gdb_path)
+    print("\n=== Cleaning GDB ===")
+    log("Starting GDB cleaning...")
+    log(f"Target GDB: {gdb_path}")
+    log(f"Feature classes queued: {len(feature_class_paths)}")
 
-	print("\n=== Cleaning GDB ===")
-	log("Starting GDB cleaning...")
-	log(f"Target GDB: {gdb_path}")
-	log(f"Feature classes queued: {len(feature_class_paths)}")
+    cleaning_report_lines = []
+    cleaning_report_lines.append("=== GDB Cleaning Time Log ===")
+    cleaning_report_lines.append(f"Run started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    cleaning_report_lines.append(f"Target GDB: {gdb_path}")
+    cleaning_report_lines.append(f"Feature classes queued: {len(feature_class_paths)}")
+    cleaning_report_lines.append("")
 
-	cleaned_count = 0
-	failed_count = 0
+    cleaned_count = 0
+    failed_count = 0
 
-	for index, feature_class_path in enumerate(feature_class_paths, start=1):
-		start_time = time.time()
-		feature_class_name = os.path.basename(feature_class_path)
+    for index, feature_class_path in enumerate(feature_class_paths, start=1):
+        start_time = time.time()
+        feature_class_name = os.path.basename(feature_class_path)
+        log(f"Cleaning {feature_class_name} ({index}/{len(feature_class_paths)})")
 
-		log(f"Cleaning {feature_class_name} ({index}/{len(feature_class_paths)})")
+        try:
+            arcpy.RepairGeometry_management(feature_class_path)
 
-		try:
-			arcpy.RepairGeometry_management(feature_class_path)
+            try:
+                arcpy.RemoveSpatialIndex_management(feature_class_path)
+            except Exception:
+                log(f"{feature_class_name} had no spatial index to remove.")
 
-			try:
-				arcpy.RemoveSpatialIndex_management(feature_class_path)
-			except Exception:
-				log(f"{feature_class_name} had no spatial index to remove.")
+            arcpy.RecalculateFeatureClassExtent_management(feature_class_path)
+            arcpy.CalculateDefaultGridIndex_management(feature_class_path)
+            arcpy.AddSpatialIndex_management(feature_class_path)
 
-			arcpy.RecalculateFeatureClassExtent_management(feature_class_path)
-			arcpy.CalculateDefaultGridIndex_management(feature_class_path)
-			arcpy.AddSpatialIndex_management(feature_class_path)
+            cleaned_count += 1
+            elapsed = time.time() - start_time
+            elapsed_text = format_elapsed(elapsed)
 
-			cleaned_count += 1
-			elapsed = time.time() - start_time
-			print(f"Cleaned {feature_class_name} in {format_elapsed(elapsed)}")
-		except Exception as exc:
-			failed_count += 1
-			elapsed = time.time() - start_time
-			log(f"FAILED CLEANING: {feature_class_name} | elapsed={format_elapsed(elapsed)} | {get_error_message(exc)}")
-		finally:
-			arcpy.ClearWorkspaceCache_management()
+            print(f"Cleaned {feature_class_name} in {elapsed_text}")
+            cleaning_report_lines.append(f"CLEANED: {feature_class_name} | elapsed={elapsed_text}")
 
-	log(f"GDB cleaning complete. cleaned={cleaned_count}, failed={failed_count}")
-	return failed_count
+        except Exception as exc:
+            failed_count += 1
+            elapsed = time.time() - start_time
+            elapsed_text = format_elapsed(elapsed)
+            error_message = get_error_message(exc)
+
+            log(f"FAILED CLEANING: {feature_class_name} | elapsed={elapsed_text} | {error_message}")
+            cleaning_report_lines.append(f"FAILED: {feature_class_name} | elapsed={elapsed_text} | {error_message}")
+
+        finally:
+            arcpy.ClearWorkspaceCache_management()
+
+    cleaning_report_lines.append("")
+    cleaning_report_lines.append(f"GDB cleaning complete. cleaned={cleaned_count}, failed={failed_count}")
+    cleaning_report_lines.append(f"Run ended: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    cleaning_report_lines.append("")
+
+    ensure_parent_dir(CLEANED_TIME_LOG_TXT)
+    with open(CLEANED_TIME_LOG_TXT, "w", encoding="utf-8") as cleaned_log_handle:
+        cleaned_log_handle.write("\n".join(cleaning_report_lines))
+
+    log(f"GDB cleaning complete. cleaned={cleaned_count}, failed={failed_count}")
+    log(f"Cleaned time log written to: {CLEANED_TIME_LOG_TXT}")
+
+    return failed_count
 
 
 # ============================================================
