@@ -22,6 +22,9 @@ RESULTS:
 - Copies master-list datasets from source SDE connections to the target GDB.
 - Tracks copy status in JSON and writes detailed timestamped logs.
 - The cleaning log can hold multiple cleanup runs in the same file. 
+
+ADJUST THE MASTER LAYER LIST OUTPUT TEXT TO CONTROL WHAT IS COPIED. 
+The script will only copy datasets listed in the master layer list text file.
 '''
 
 import arcpy
@@ -37,8 +40,15 @@ from collections import defaultdict
 # ============================================================
 # Global Settings (EDIT THESE)
 # ============================================================
+# These are the main settings to adjust for your environment. Update the paths and map names as needed.
+OUTPUT_FOLDER = r"I:\2026_Basemap_Data_forVTPKandPDFs\Data"
+
+TARGET_GDB = os.path.join(OUTPUT_FOLDER, "vTPK_and_PDF_Data_2026.gdb")
+
+RUN_CLEANUP = True      # Enable/disable post-copy cleanup True or False
+
+# APRX paths and map names review and see if change is needed.
 VTPK_APRX = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\DataDevelopment\FeedbackApplication\FSBasemap_Feedback_TEMPLATE.aprx"
-#PDF_APRX = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\JWilliams\2026_DataCopy\PDF_aprx_05282026.aprx"
 MAP_126720 = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\126720_FSBaseMap\126720_FSBaseMap.aprx"
 MAP_63360_PR = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\63360_FSBaseMap_PuertoRico\63360_FSBaseMap_PuertoRico.aprx"
 MAP_63360 = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\63360_FSBaseMap\63360_FSBaseMap.aprx"
@@ -48,10 +58,8 @@ FSTOPO_PR = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\
 ADMIN_SERIES = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\Admin_Series\AdminSeries.aprx"
 ALASKA_FOREST_SERIES = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\ForestSeries_Alaska\AlaskaForestSeriesMaps.aprx"
 
-OUTPUT_FOLDER = r"I:\2026_Basemap_Data_forVTPKandPDFs\Data"
 
 VTPK_MAP_NAME = "VTPK_June_2026"
-#PDF_MAP_NAME = "Map"
 MAP_126720_NAME = "Layers"
 MAP_63360_PR_NAME = "Main Map"
 MAP_63360_NAME = "Layers"
@@ -61,7 +69,7 @@ FSTOPO_PR_NAME = "BaseMap"
 ADMIN_SERIES_NAME = "Main Map"
 ALASKA_FOREST_SERIES_NAME = "Main Map"
 
-
+#Don't need to adjust these unless you want to change the output file names.
 VTPK_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "vtpk_Layers_inTOC.txt")
 PDF_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "pdf_Layers_inTOC.txt")
 MAP_126720_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "126720_Layers_inTOC.txt")
@@ -76,15 +84,11 @@ MASTER_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "MASTER_layers_list_for_copy
 FAILED_COPY_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "FAILED_layers_list_for_copy.txt")
 CLEANED_TIME_LOG_TXT = os.path.join(OUTPUT_FOLDER, "cleaned_time_log.txt")
 
-TARGET_GDB = os.path.join(OUTPUT_FOLDER, "vTPK_and_PDF_Data_2026.gdb")
 LOG_FILE = os.path.join(OUTPUT_FOLDER, "copy_log.txt")
 STATUS_FILE = os.path.join(OUTPUT_FOLDER, "copy_status.json")
 
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 3          # seconds between retries
-
-
-RUN_CLEANUP = True      # Enable/disable post-copy cleanup True or False
 
 # Known source geodatabase paths
 edw_source = r"\\usda.net\fs\FS\Reference\GeoTool\agency\AG4SDatabaseConnection\edw_dev_default_as_myself.sde"
@@ -102,7 +106,6 @@ SOURCE_DISPLAY_NAMES = {
 	"wo_ddcdw": "DDCDW",
 	"wo_fsbasemap": "FSBasemap",
 }
-
 SOURCE_ORDER = ["EDW", "DDCDW", "FSBasemap"]
 
 
