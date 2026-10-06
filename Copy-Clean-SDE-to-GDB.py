@@ -46,6 +46,15 @@ STATUS_FILE = os.path.join(OUTPUT_FOLDER, "copy_status.json")
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 3          # seconds between retries
 
+STATUS_SCHEMA_VERSION = 2
+COPY_COMPLETE_STATES = {"copied_verified", "skipped_current"}
+COPY_RECOVERY_STATES = {"inspecting", "ready_to_copy", "copying"}
+CLEANUP_COMPLETE_STATES = {"cleaned"}
+CLEANUP_RECOVERY_STATES = {"cleanup_pending", "cleaning"}
+
+ACTIVE_RUN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+ACTIVE_RUN_STARTED_AT = datetime.datetime.now().isoformat()
+
 APRX_ENTRIES = [
 	{
 		"selection_key": "vtpk",
@@ -171,26 +180,239 @@ def log(message):
 # ============================================================
 # Status Manifest Utility
 # ============================================================
+def get_current_timestamp():
+	return datetime.datetime.now().isoformat()
+
+
+def get_empty_status_manifest():
+	return {
+		"schema_version": STATUS_SCHEMA_VERSION,
+		"current_run": {},
+		"runs": {},
+		"items": {},
+		"cleanup_items": {},
+	}
+
+
+def normalize_copy_status_value(value):
+	status_value = (value or "pending").strip().lower()
+	legacy_mapping = {
+		"success": "copied_verified",
+	}
+	status_value = legacy_mapping.get(status_value, status_value)
+	valid_values = {
+		"pending",
+		"inspecting",
+		"ready_to_copy",
+		"copying",
+		"copied_verified",
+		"skipped_current",
+		"failed",
+	}
+	return status_value if status_value in valid_values else "pending"
+
+
+def normalize_cleanup_status_value(value):
+	status_value = (value or "cleanup_pending").strip().lower()
+	valid_values = {"cleanup_pending", "cleaning", "cleaned", "cleanup_failed"}
+	return status_value if status_value in valid_values else "cleanup_pending"
+
+
+def normalize_status_manifest(status):
+	if not isinstance(status, dict):
+		status = {}
+
+	status.setdefault("schema_version", STATUS_SCHEMA_VERSION)
+	status["schema_version"] = STATUS_SCHEMA_VERSION
+	status.setdefault("current_run", {})
+	status.setdefault("runs", {})
+	status.setdefault("items", {})
+	status.setdefault("cleanup_items", {})
+
+	if not isinstance(status["current_run"], dict):
+		status["current_run"] = {}
+	if not isinstance(status["runs"], dict):
+		status["runs"] = {}
+	if not isinstance(status["items"], dict):
+		status["items"] = {}
+	if not isinstance(status["cleanup_items"], dict):
+		status["cleanup_items"] = {}
+
+	for item_key, item_record in list(status["items"].items()):
+		if not isinstance(item_record, dict):
+			item_record = {}
+		item_record.setdefault("src", item_key)
+		item_record["status"] = normalize_copy_status_value(item_record.get("status"))
+		status["items"][item_key] = item_record
+
+	for cleanup_key, cleanup_record in list(status["cleanup_items"].items()):
+		if not isinstance(cleanup_record, dict):
+			cleanup_record = {}
+		cleanup_record.setdefault("feature_class_path", cleanup_key)
+		cleanup_record["status"] = normalize_cleanup_status_value(cleanup_record.get("status"))
+		status["cleanup_items"][cleanup_key] = cleanup_record
+
+	return status
+
+
 def load_status():
 	if not os.path.exists(STATUS_FILE):
-		return {"items": {}}
+		return get_empty_status_manifest()
 
 	try:
 		with open(STATUS_FILE, "r", encoding="utf-8") as status_handle:
 			status = json.load(status_handle)
 	except (OSError, json.JSONDecodeError):
-		return {"items": {}}
+		return get_empty_status_manifest()
 
-	status.setdefault("items", {})
-	return status
+	return normalize_status_manifest(status)
 
 
 def save_status(status):
+	status = normalize_status_manifest(status)
 	ensure_parent_dir(STATUS_FILE)
 	temp_file = f"{STATUS_FILE}.tmp"
 	with open(temp_file, "w", encoding="utf-8") as status_handle:
 		json.dump(status, status_handle, indent=2, sort_keys=True)
 	os.replace(temp_file, STATUS_FILE)
+
+
+def start_run(status):
+	previous_run = status.get("current_run") or {}
+	previous_run_id = previous_run.get("run_id")
+	if previous_run_id and previous_run_id != ACTIVE_RUN_ID:
+		previous_entry = status["runs"].get(previous_run_id)
+		if previous_entry and previous_entry.get("result", "running") == "running":
+			previous_entry["result"] = "interrupted"
+			previous_entry["ended_at"] = get_current_timestamp()
+			previous_entry["interrupted_at"] = previous_entry["ended_at"]
+
+	status["runs"][ACTIVE_RUN_ID] = {
+		"started_at": ACTIVE_RUN_STARTED_AT,
+		"updated_at": ACTIVE_RUN_STARTED_AT,
+		"phase": "starting",
+		"result": "running",
+	}
+	status["current_run"] = {
+		"run_id": ACTIVE_RUN_ID,
+		"started_at": ACTIVE_RUN_STARTED_AT,
+		"phase": "starting",
+		"result": "running",
+	}
+	save_status(status)
+	return previous_run_id
+
+
+def update_run_phase(status, phase_name, **extra_fields):
+	timestamp = get_current_timestamp()
+	run_entry = status["runs"].setdefault(ACTIVE_RUN_ID, {})
+	run_entry.setdefault("started_at", ACTIVE_RUN_STARTED_AT)
+	run_entry["phase"] = phase_name
+	run_entry["updated_at"] = timestamp
+	run_entry["result"] = run_entry.get("result", "running")
+	for key, value in extra_fields.items():
+		run_entry[key] = value
+
+	status["current_run"] = {
+		"run_id": ACTIVE_RUN_ID,
+		"started_at": run_entry.get("started_at", ACTIVE_RUN_STARTED_AT),
+		"phase": phase_name,
+		"result": run_entry.get("result", "running"),
+		"updated_at": timestamp,
+	}
+	save_status(status)
+
+
+def finish_run(status, result, phase_name, error_message=""):
+	timestamp = get_current_timestamp()
+	run_entry = status["runs"].setdefault(ACTIVE_RUN_ID, {})
+	run_entry.setdefault("started_at", ACTIVE_RUN_STARTED_AT)
+	run_entry["phase"] = phase_name
+	run_entry["result"] = result
+	run_entry["updated_at"] = timestamp
+	run_entry["ended_at"] = timestamp
+	if error_message:
+		run_entry["error"] = error_message
+	elif "error" in run_entry:
+		del run_entry["error"]
+
+	status["current_run"] = {
+		"run_id": ACTIVE_RUN_ID,
+		"started_at": run_entry.get("started_at", ACTIVE_RUN_STARTED_AT),
+		"phase": phase_name,
+		"result": result,
+		"updated_at": timestamp,
+		"ended_at": timestamp,
+	}
+	save_status(status)
+
+
+def update_copy_item_status(status, item_info, state, **extra_fields):
+	timestamp = get_current_timestamp()
+	record = status["items"].get(item_info["src"], {})
+	record.update({
+		"name": item_info["name"],
+		"source_name": item_info["source_name"],
+		"dataset_name": item_info["dataset_name"],
+		"src": item_info["src"],
+		"dest": item_info["dest"],
+		"status": normalize_copy_status_value(state),
+		"last_seen_run_id": ACTIVE_RUN_ID,
+		"updated_at": timestamp,
+	})
+	if item_info.get("row_count") is not None:
+		record["row_count"] = item_info["row_count"]
+	if item_info.get("source_signature") is not None:
+		record["source_signature"] = item_info["source_signature"]
+	for key, value in extra_fields.items():
+		record[key] = value
+	status["items"][item_info["src"]] = record
+	save_status(status)
+	return record
+
+
+def update_cleanup_item_status(status, feature_class_path, feature_class_name, state, target_signature=None, **extra_fields):
+	timestamp = get_current_timestamp()
+	record = status["cleanup_items"].get(feature_class_path, {})
+	record.update({
+		"feature_class_name": feature_class_name,
+		"feature_class_path": feature_class_path,
+		"status": normalize_cleanup_status_value(state),
+		"last_seen_run_id": ACTIVE_RUN_ID,
+		"updated_at": timestamp,
+	})
+	if target_signature is not None:
+		record["target_signature"] = target_signature
+	for key, value in extra_fields.items():
+		record[key] = value
+	status["cleanup_items"][feature_class_path] = record
+	save_status(status)
+	return record
+
+
+def reconcile_cleanup_state_for_item(status, item_info, target_signature):
+	cleanup_record = status["cleanup_items"].get(item_info["dest"], {})
+	cleanup_state = normalize_cleanup_status_value(cleanup_record.get("status"))
+	cleanup_signature = cleanup_record.get("target_signature")
+	if cleanup_state in CLEANUP_COMPLETE_STATES and cleanup_signature == target_signature:
+		update_cleanup_item_status(
+			status,
+			item_info["dest"],
+			item_info["name"],
+			"cleaned",
+			target_signature=target_signature,
+			error="",
+		)
+		return
+
+	update_cleanup_item_status(
+		status,
+		item_info["dest"],
+		item_info["name"],
+		"cleanup_pending",
+		target_signature=target_signature,
+		error="",
+	)
 
 
 # ============================================================
@@ -579,12 +801,13 @@ def build_layer_lists(selected_entries):
 	log(f"\n Master layer list written to: {MASTER_LAYER_LIST_TXT}")
 
 
-def pause_for_master_list_review():
+def pause_for_master_list_review(status):
 	print("\nStep one is complete.")
 	print(f"Review the master layer list before copying: {MASTER_LAYER_LIST_TXT}")
 	answer = input("Type Y to continue with data copying, or anything else to stop: ").strip().lower()
 	if answer not in {"y", "yes"}:
 		log("User stopped workflow after reviewing the master layer list.")
+		finish_run(status, "aborted_by_user", "stopped_after_master_list_review")
 		sys.exit(0)
 
 
@@ -653,6 +876,21 @@ def get_source_dataset_path(source_path, dataset_name):
 	if dataset_name.lower().startswith(source_path.lower()):
 		return dataset_name
 	return os.path.join(source_path, dataset_name)
+
+
+def build_item_stub(master_layer):
+	source_path = get_source_dataset_path(master_layer["source_path"], master_layer["dataset_name"])
+	target_name = get_target_name(master_layer["dataset_name"])
+	target_path = os.path.join(TARGET_GDB, target_name)
+	return {
+		"name": target_name,
+		"source_name": master_layer["source_name"],
+		"dataset_name": master_layer["dataset_name"],
+		"src": source_path,
+		"dest": target_path,
+		"row_count": None,
+		"source_signature": None,
+	}
 
 
 def build_item_info(master_layer):
@@ -747,40 +985,58 @@ def copy_item(item_info):
 				}
 
 
-def build_copy_items(master_source_dict, master_other_sources):
+def build_copy_items(master_source_dict, master_other_sources, status):
 	log("\n Inspecting source datasets and calculating row counts...")
 	items = []
 	failed_inspection = []
 
 	for master_layer in iter_master_layers(master_source_dict, master_other_sources):
+		item_stub = build_item_stub(master_layer)
+		prior_record = status["items"].get(item_stub["src"], {})
+		prior_status = normalize_copy_status_value(prior_record.get("status"))
+		update_copy_item_status(status, item_stub, "inspecting", error="")
 		try:
 			item_info = build_item_info(master_layer)
+			item_info["prior_status"] = prior_status
+			update_copy_item_status(status, item_info, "ready_to_copy", error="")
 			items.append(item_info)
 		except Exception as exc:
 			error_message = get_error_message(exc)
+			update_copy_item_status(status, item_stub, "failed", error=error_message)
 			failed_inspection.append((master_layer, error_message))
 			log(f"FAILED INSPECTION: {master_layer['source_name']} | {master_layer['dataset_name']} | {error_message}")
 			arcpy.ClearWorkspaceCache_management()
 
-	items.sort(key=lambda item: item["row_count"], reverse=True)
+	def sort_key(item):
+		prior_status = item.get("prior_status", "pending")
+		if prior_status in COPY_RECOVERY_STATES:
+			priority = 0
+		elif prior_status == "failed":
+			priority = 1
+		elif prior_status in COPY_COMPLETE_STATES:
+			priority = 3
+		else:
+			priority = 2
+		return (priority, -item["row_count"], item["name"])
+
+	items.sort(key=sort_key)
 	return items, failed_inspection
 
 
-def copy_master_layers_from_file():
+def copy_master_layers_from_file(status):
 	master_source_dict, master_other_sources = normalize_layer_report_file(MASTER_LAYER_LIST_TXT)
 	log(f"Normalized master layer list: {MASTER_LAYER_LIST_TXT}")
 	log_master_layers(master_source_dict, master_other_sources)
-	status = load_status()
 
 	if not arcpy.Exists(TARGET_GDB):
 		log(f"\n Creating target gdb: {TARGET_GDB}")
 		arcpy.CreateFileGDB_management(os.path.dirname(TARGET_GDB), os.path.basename(TARGET_GDB))
 
-	items, failed_inspection = build_copy_items(master_source_dict, master_other_sources)
+	items, failed_inspection = build_copy_items(master_source_dict, master_other_sources, status)
 
 	total_items = len(items)
 	log(f"Total items to process: {total_items}")
-	log("Using 1 worker. Largest datasets are copied first based on source row count.")
+	log("Using 1 worker. Interrupted items are resumed first, then failed items, then remaining datasets by size.")
 
 	completed = 0
 	copied = 0
@@ -794,81 +1050,87 @@ def copy_master_layers_from_file():
 		completed += 1
 		progress_bar(completed, total_items)
 
+		prior_status = item.get("prior_status", "pending")
+		if prior_status in COPY_RECOVERY_STATES:
+			log(f"RESUMING INTERRUPTED COPY: {item['name']} | prior_status={prior_status}")
+		elif prior_status == "failed":
+			log(f"RETRYING FAILED COPY: {item['name']}")
+
 		is_current, target_signature = destination_is_current(item)
 		if is_current:
 			skipped += 1
-			status["items"][item["src"]] = {
-				"name": item["name"],
-				"source_name": item["source_name"],
-				"dataset_name": item["dataset_name"],
-				"status": "skipped_current",
-				"row_count": item["row_count"],
-				"source_signature": item["source_signature"],
-				"target_signature": target_signature,
-				"elapsed_seconds": 0,
-				"updated_at": datetime.datetime.now().isoformat(),
-			}
-			save_status(status)
+			update_copy_item_status(
+				status,
+				item,
+				"skipped_current",
+				target_signature=target_signature,
+				elapsed_seconds=0,
+				error="",
+			)
+			reconcile_cleanup_state_for_item(status, item, target_signature)
 			log(f"SKIPPED CURRENT: {item['name']} | rows={item['row_count']:,}")
 			continue
 
+		update_copy_item_status(status, item, "copying", error="")
 		log(f"\nSTARTING COPY: {item['name']} ({completed}/{total_items}) | rows={item['row_count']:,}")
 		result = copy_item(item)
 		elapsed = format_elapsed(result["elapsed"])
-
-		status["items"][item["src"]] = {
-			"name": item["name"],
-			"source_name": item["source_name"],
-			"dataset_name": item["dataset_name"],
-			"status": "success" if result["success"] else "failed",
-			"row_count": item["row_count"],
-			"source_signature": item["source_signature"],
-			"target_signature": result["target_signature"],
-			"elapsed_seconds": result["elapsed"],
-			"updated_at": datetime.datetime.now().isoformat(),
-			"error": result["error"],
-		}
-		save_status(status)
+		if result["success"] and result["target_signature"] != item["source_signature"]:
+			result["success"] = False
+			result["error"] = "Post-copy validation failed: target signature does not match source."
+			result["target_signature"] = None
 
 		if result["success"]:
 			copied += 1
+			update_copy_item_status(
+				status,
+				item,
+				"copied_verified",
+				target_signature=result["target_signature"],
+				elapsed_seconds=result["elapsed"],
+				error="",
+			)
+			reconcile_cleanup_state_for_item(status, item, result["target_signature"])
 			log(f"COPIED: {item['name']} | elapsed={elapsed}")
 		else:
 			failed += 1
+			update_copy_item_status(
+				status,
+				item,
+				"failed",
+				target_signature=result["target_signature"],
+				elapsed_seconds=result["elapsed"],
+				error=result["error"],
+			)
 			log(f"FAILED: {item['name']} | elapsed={elapsed} | {result['error']}")
 
 	total_elapsed = format_elapsed(time.time() - run_start)
 	print("\nCopy complete!")
 	log(f"Summary: copied={copied}, skipped_current={skipped}, failed={failed}, total_elapsed={total_elapsed}")
 
-	return failed
+	return failed, items
 
 
 # ============================================================
 # Cleanup Function (Runs After Copying)
 #       - Geoprocessing tools preserved from cleaning process
 # ============================================================
-def list_feature_classes_for_cleaning(gdb_path):
+def list_feature_classes_for_cleaning(copy_items):
 	feature_class_paths = []
-	arcpy.env.workspace = gdb_path
-
-	for feature_class in arcpy.ListFeatureClasses() or []:
-		feature_class_paths.append(os.path.join(gdb_path, feature_class))
-
-	for dataset_name in arcpy.ListDatasets("", "Feature") or []:
-		dataset_path = os.path.join(gdb_path, dataset_name)
-		arcpy.env.workspace = dataset_path
-		for feature_class in arcpy.ListFeatureClasses() or []:
-			feature_class_paths.append(os.path.join(dataset_path, feature_class))
-
-	arcpy.env.workspace = gdb_path
+	seen_paths = set()
+	for item in copy_items:
+		feature_class_path = item["dest"]
+		if feature_class_path in seen_paths or not arcpy.Exists(feature_class_path):
+			continue
+		seen_paths.add(feature_class_path)
+		feature_class_paths.append(feature_class_path)
 	return feature_class_paths
 
 
-def gdb_cleaning(gdb_path):
+def gdb_cleaning(gdb_path, status, copy_items):
 	arcpy.env.overwriteOutput = False
 	arcpy.env.workspace = gdb_path
-	feature_class_paths = list_feature_classes_for_cleaning(gdb_path)
+	feature_class_paths = list_feature_classes_for_cleaning(copy_items)
 
 	print("\n=== Cleaning GDB ===")
 	log("Starting GDB cleaning...")
@@ -881,8 +1143,45 @@ def gdb_cleaning(gdb_path):
 	for index, feature_class_path in enumerate(feature_class_paths, start=1):
 		start_time = time.time()
 		feature_class_name = os.path.basename(feature_class_path)
+		current_signature = get_dataset_signature(feature_class_path)
+		cleanup_record = status["cleanup_items"].get(feature_class_path, {})
+		prior_status = normalize_cleanup_status_value(cleanup_record.get("status"))
 
-		log(f"Cleaning {feature_class_name} ({index}/{len(feature_class_paths)})")
+		if prior_status in CLEANUP_COMPLETE_STATES and cleanup_record.get("target_signature") == current_signature:
+			update_cleanup_item_status(
+				status,
+				feature_class_path,
+				feature_class_name,
+				"cleaned",
+				target_signature=current_signature,
+				error="",
+			)
+			log(f"SKIPPED CLEAN CURRENT: {feature_class_name} ({index}/{len(feature_class_paths)})")
+			continue
+
+		if prior_status == "cleaning":
+			log(f"RESUMING INTERRUPTED CLEANING: {feature_class_name} ({index}/{len(feature_class_paths)})")
+		elif prior_status == "cleanup_failed":
+			log(f"RETRYING FAILED CLEANING: {feature_class_name} ({index}/{len(feature_class_paths)})")
+		else:
+			log(f"Cleaning {feature_class_name} ({index}/{len(feature_class_paths)})")
+
+		update_cleanup_item_status(
+			status,
+			feature_class_path,
+			feature_class_name,
+			"cleanup_pending",
+			target_signature=current_signature,
+			error="",
+		)
+		update_cleanup_item_status(
+			status,
+			feature_class_path,
+			feature_class_name,
+			"cleaning",
+			target_signature=current_signature,
+			error="",
+		)
 
 		try:
 			arcpy.RepairGeometry_management(feature_class_path)
@@ -898,10 +1197,28 @@ def gdb_cleaning(gdb_path):
 
 			cleaned_count += 1
 			elapsed = time.time() - start_time
+			update_cleanup_item_status(
+				status,
+				feature_class_path,
+				feature_class_name,
+				"cleaned",
+				target_signature=current_signature,
+				elapsed_seconds=elapsed,
+				error="",
+			)
 			print(f"Cleaned {feature_class_name} in {format_elapsed(elapsed)}")
 		except Exception as exc:
 			failed_count += 1
 			elapsed = time.time() - start_time
+			update_cleanup_item_status(
+				status,
+				feature_class_path,
+				feature_class_name,
+				"cleanup_failed",
+				target_signature=current_signature,
+				elapsed_seconds=elapsed,
+				error=get_error_message(exc),
+			)
 			log(f"FAILED CLEANING: {feature_class_name} | elapsed={format_elapsed(elapsed)} | {get_error_message(exc)}")
 		finally:
 			arcpy.ClearWorkspaceCache_management()
@@ -918,25 +1235,50 @@ if __name__ == "__main__":
 		print(f"WARNING: Could not initialize log file: {ACTIVE_LOG_FILE}", file=sys.stderr)
 
 	run_failed = 0
+	status = load_status()
+	previous_run_id = start_run(status)
 
 	try:
 		log(f"Run log file: {ACTIVE_LOG_FILE}")
+		if previous_run_id:
+			log(f"Detected prior interrupted run: {previous_run_id}")
 		log_storage_location("Target GDB", TARGET_GDB)
 
+		update_run_phase(status, "awaiting_aprx_selection")
 		selected_entries = prompt_for_aprx_entries()
+		update_run_phase(
+			status,
+			"building_layer_lists",
+			selected_entries=[entry["label"] for entry in selected_entries],
+		)
 		build_layer_lists(selected_entries)
-		pause_for_master_list_review()
+		update_run_phase(status, "awaiting_master_list_review")
+		pause_for_master_list_review(status)
 
-		run_failed = copy_master_layers_from_file()
+		update_run_phase(status, "copying")
+		run_failed, current_copy_items = copy_master_layers_from_file(status)
+		update_run_phase(
+			status,
+			"copy_complete",
+			copy_failed_count=run_failed,
+			copy_item_count=len(current_copy_items),
+		)
 		log("=== GDB Copy Completed ===")
 
 		if RUN_CLEANUP:
-			run_failed += gdb_cleaning(TARGET_GDB)
+			update_run_phase(status, "cleaning")
+			run_failed += gdb_cleaning(TARGET_GDB, status, current_copy_items)
+			update_run_phase(status, "cleanup_complete")
+		else:
+			update_run_phase(status, "cleanup_skipped")
 
 		print("\nAll operations complete.")
 		log("=== All operations complete ===")
+		finish_run(status, "success" if not run_failed else "completed_with_failures", "complete")
 	except Exception as exc:
-		log(f"FATAL ERROR: {get_error_message(exc)}")
+		error_message = get_error_message(exc)
+		log(f"FATAL ERROR: {error_message}")
+		finish_run(status, "failed", "fatal_error", error_message=error_message)
 		sys.exit(1)
 
 	if run_failed:
