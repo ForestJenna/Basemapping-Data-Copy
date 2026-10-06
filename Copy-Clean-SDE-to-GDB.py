@@ -1,23 +1,21 @@
 '''
 PURPOSE:
 The purpose of this script is to consolidate the layer-list, data-copy, status-tracking,
-and optional cleaning workflows into one repeatable process. It reads specified map TOCs
-from two APRXs, writes layer-list reports, writes a master layer list without duplicate
+and optional cleaning workflows into one repeatable process. It reads selected APRX
+documents, writes layer-list reports, writes a master layer list without duplicate
 datasets, pauses so the user can review that master list, then copies the listed SDE
 datasets to a local file geodatabase.
 
 SET UP:
-1. Update the global settings below, especially APRX paths, map names, output paths,
-   target GDB, log path, and SDE connection paths.
-2. Each APRX has its own map name. This script only checks those specified maps.
+1. Update the APRX configuration list below, especially APRX paths, output paths,
+	target GDB, log path, and SDE connection paths.
+2. This script checks all maps in the selected APRX documents.
 3. Run in an ArcGIS Pro Python environment where ArcPy is available.
 4. Set RUN_CLEANUP to True if the target GDB should be cleaned after copying.
 
 RESULTS:
-- Creates three text files:
-  1. VTPK APRX layer list
-  2. PDF APRX layer list
-  3. Master layer list for copy, without duplicate source datasets
+- Creates selected APRX layer list files and one master layer list for copy, without
+	duplicate source datasets
 - Pauses after creating the master list so the user can review it before copying.
 - Creates the target GDB if it does not exist.
 - Copies master-list datasets from source SDE connections to the target GDB.
@@ -33,31 +31,80 @@ import sys
 import time
 from collections import defaultdict
 
-
 # ============================================================
-# Global Settings (EDIT THESE)
+# Configuration - Update these paths and settings as needed
 # ============================================================
-VTPK_APRX = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\DataDevelopment\FeedbackApplication\FSBasemap_Feedback_TEMPLATE.aprx"
-PDF_APRX = r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\JWilliams\2026_DataCopy\PDF_aprx_05282026.aprx"
+OUTPUT_FOLDER = r"I:\2026_Basemap_Data_forVTPKandPDFs\OCT_2026_DataCopy"
+RUN_CLEANUP = False      # Enable/disable post-copy cleanup True or False
 
-OUTPUT_FOLDER = r"I:\2026_Basemap_Data_forVTPKandPDFs\Data"
+MASTER_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "MASTER_layers_list_for_copy.txt")
 
-VTPK_MAP_NAME = "VTPK_June_2026"
-PDF_MAP_NAME = "Map"
-
-VTPK_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "vtpk_Layers_inTOC.txt")
-PDF_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "pdf_Layers_inTOC.txt")
-MASTER_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "layers_for_copy.txt")
-
-TARGET_GDB = os.path.join(OUTPUT_FOLDER, "vTPK_and_PDF_Data_2026.gdb")
+TARGET_GDB = os.path.join(OUTPUT_FOLDER, "All_Maps_Data_2026.gdb")
 LOG_FILE = os.path.join(OUTPUT_FOLDER, "copy_log.txt")
 STATUS_FILE = os.path.join(OUTPUT_FOLDER, "copy_status.json")
 
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 3          # seconds between retries
 
+APRX_ENTRIES = [
+	{
+		"selection_key": "vtpk",
+		"label": "VTPK APRX",
+		"report_name": "VTPK layer list",
+		"aprx_path": r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\DataDevelopment\FeedbackApplication\FSBasemap_Feedback_TEMPLATE.aprx",
+		"map_name": None,
+		"layer_list_txt": os.path.join(OUTPUT_FOLDER, "vtpk_Layers_inTOC.txt"),
+	},
+	{
+		"selection_key": "pdf",
+		"label": "PDF APRX",
+		"report_name": "PDF layer list",
+		"aprx_path": r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\Workspace\JWilliams\2026_DataCopy\PDF_aprx_05282026.aprx",
+		"map_name": None,
+		"layer_list_txt": os.path.join(OUTPUT_FOLDER, "pdf_Layers_inTOC.txt"),
+	},
+	{
+		"selection_key": "63360",
+		"label": "63360 APRX",
+		"report_name": "63360 layer list",
+		"aprx_path": r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\63360_FSBaseMap\63360_FSBaseMap.aprx",
+		"map_name": None,
+		"layer_list_txt": os.path.join(OUTPUT_FOLDER, "63360_Layers_inTOC.txt"),
+	},
+	{
+		"selection_key": "126720",
+		"label": "126720 APRX",
+		"report_name": "126720 layer list",
+		"aprx_path": r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\126720_FSBaseMap\126720_FSBaseMap.aprx",
+		"map_name": None,
+		"layer_list_txt": os.path.join(OUTPUT_FOLDER, "126720_Layers_inTOC.txt"),
+	},
+	{
+		"selection_key": "158400",
+		"label": "158400 APRX",
+		"report_name": "158400 layer list",
+		"aprx_path": r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\158400_FSBaseMap\158400_FSBaseMap.aprx",
+		"map_name": None,
+		"layer_list_txt": os.path.join(OUTPUT_FOLDER, "158400_Layers_inTOC.txt"),
+	},
+	{
+		"selection_key": "100K",
+		"label": "100K APRX",
+		"report_name": "100K layer list",
+		"aprx_path": r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\100K_FSBaseMap\100K_FSBaseMap.aprx",
+		"map_name": None,
+		"layer_list_txt": os.path.join(OUTPUT_FOLDER, "100K_Layers_inTOC.txt"),
+	},
+	{
+		"selection_key": "FSTopo",
+		"label": "FSTopo APRX",
+		"report_name": "FSTopo layer list",
+		"aprx_path": r"\\usda.net\fs\FS\NFS\WOEngineering\GMO-GTAC\Project\DDC\FSBaseMaps\APRX\Pro\FSTopo\FSTopoContinental_2026_July_SDE.aprx",
+		"map_name": None,
+		"layer_list_txt": os.path.join(OUTPUT_FOLDER, "FSTopo_Layers_inTOC.txt"),
+	},
+]
 
-RUN_CLEANUP = False      # Enable/disable post-copy cleanup True or False
 
 # Known source geodatabase paths
 edw_source = r"\\usda.net\fs\FS\Reference\GeoTool\agency\AG4SDatabaseConnection\edw_dev_default_as_myself.sde"
@@ -289,12 +336,15 @@ def get_full_dataset_name(datasource):
 
 
 def get_exact_map(aprx, map_name, aprx_label):
-	matching_maps = [m for m in aprx.listMaps() if m.name == map_name]
-	if not matching_maps:
-		raise ValueError(f"Map named '{map_name}' was not found in {aprx_label}. This script will not process all maps.")
-	if len(matching_maps) > 1:
-		raise ValueError(f"More than one map named '{map_name}' was found in {aprx_label}. Use a unique map name.")
-	return matching_maps[0]
+	maps_to_check = aprx.listMaps()
+	if not maps_to_check:
+		raise ValueError(f"No maps were found in {aprx_label}.")
+	if not map_name:
+		return maps_to_check
+	for map_to_check in maps_to_check:
+		if map_to_check.name == map_name:
+			return [map_to_check]
+	raise ValueError(f"Map '{map_name}' was not found in {aprx_label}.")
 
 
 def make_empty_layer_report():
@@ -310,27 +360,28 @@ def make_empty_layer_report():
 def collect_layers_from_aprx(aprx_path, map_name, aprx_label):
 	source_dict, other_sources = make_empty_layer_report()
 	aprx = arcpy.mp.ArcGISProject(aprx_path)
-	map_to_check = get_exact_map(aprx, map_name, aprx_label)
+	maps_to_check = get_exact_map(aprx, map_name, aprx_label)
 
-	for lyr in map_to_check.listLayers():
-		if lyr.isFeatureLayer and hasattr(lyr, "dataSource"):
-			try:
-				known_source_display, known_source_path = get_known_sde_source(lyr.dataSource)
-				if not known_source_display:
-					source_display, full_source_path, layer_name = parse_datasource(lyr.dataSource)
+	for map_to_check in maps_to_check:
+		for lyr in map_to_check.listLayers():
+			if lyr.isFeatureLayer and hasattr(lyr, "dataSource"):
+				try:
+					known_source_display, known_source_path = get_known_sde_source(lyr.dataSource)
+					if not known_source_display:
+						source_display, full_source_path, layer_name = parse_datasource(lyr.dataSource)
+						dataset_name = get_full_dataset_name(lyr.dataSource)
+						other_sources[full_source_path]["source_path"] = full_source_path
+						other_sources[full_source_path]["layers"].add(dataset_name or layer_name)
+						continue
+					display_name = SOURCE_DISPLAY_NAMES.get(known_source_display)
+					if not display_name:
+						continue
 					dataset_name = get_full_dataset_name(lyr.dataSource)
-					other_sources[full_source_path]["source_path"] = full_source_path
-					other_sources[full_source_path]["layers"].add(dataset_name or layer_name)
-					continue
-				display_name = SOURCE_DISPLAY_NAMES.get(known_source_display)
-				if not display_name:
-					continue
-				dataset_name = get_full_dataset_name(lyr.dataSource)
-				if dataset_name:
-					source_dict[display_name]["source_path"] = known_source_path
-					source_dict[display_name]["layers"].add(dataset_name)
-			except Exception as exc:
-				log(f"WARNING: Could not read layer datasource in {aprx_label}: {get_error_message(exc)}")
+					if dataset_name:
+						source_dict[display_name]["source_path"] = known_source_path
+						source_dict[display_name]["layers"].add(dataset_name)
+				except Exception as exc:
+					log(f"WARNING: Could not read layer datasource in {aprx_label}: {get_error_message(exc)}")
 
 	return source_dict, other_sources
 
@@ -387,6 +438,20 @@ def merge_layer_reports(report_items):
 	return merged_source_dict, merged_other_sources
 
 
+def normalize_report_layer_name(raw_value):
+	layer_name = raw_value.strip()
+	if not layer_name:
+		return ""
+
+	# Remove list punctuation around the quoted dataset name and tolerate a
+	# misplaced comma inside the closing quote.
+	layer_name = layer_name.rstrip(",").strip()
+	layer_name = layer_name.strip('"').strip("'").strip()
+	layer_name = layer_name.rstrip(",").strip()
+	layer_name = layer_name.strip('"').strip("'").strip()
+	return layer_name
+
+
 def parse_layer_report(report_path):
 	source_dict, other_sources = make_empty_layer_report()
 	current_source = None
@@ -397,7 +462,6 @@ def parse_layer_report(report_path):
 		for raw_line in report_handle:
 			line = raw_line.strip()
 			if not line:
-				in_layers = False
 				continue
 
 			if line.startswith("Source: "):
@@ -419,7 +483,7 @@ def parse_layer_report(report_path):
 				continue
 
 			if in_layers and current_source and current_source_path:
-				layer_name = line.rstrip(",").strip().strip('"')
+				layer_name = normalize_report_layer_name(line)
 				if not layer_name:
 					continue
 				if current_source in source_dict:
@@ -430,19 +494,87 @@ def parse_layer_report(report_path):
 	return source_dict, other_sources
 
 
-def build_layer_lists():
-	log("\n Building layer lists from specified APRX map TOCs...")
-	log(f"VTPK APRX map: {VTPK_MAP_NAME}")
-	vtpk_report = collect_layers_from_aprx(VTPK_APRX, VTPK_MAP_NAME, "VTPK_APRX")
-	write_layer_report(VTPK_LAYER_LIST_TXT, vtpk_report[0], vtpk_report[1])
-	log(f"VTPK layer list written to: {VTPK_LAYER_LIST_TXT}")
+def normalize_layer_report_file(report_path):
+	source_dict, other_sources = parse_layer_report(report_path)
+	write_layer_report(report_path, source_dict, other_sources)
+	return source_dict, other_sources
 
-	log(f"\n PDF APRX map: {PDF_MAP_NAME}")
-	pdf_report = collect_layers_from_aprx(PDF_APRX, PDF_MAP_NAME, "PDF_APRX")
-	write_layer_report(PDF_LAYER_LIST_TXT, pdf_report[0], pdf_report[1])
-	log(f"PDF layer list written to: {PDF_LAYER_LIST_TXT}")
 
-	master_source_dict, master_other_sources = merge_layer_reports([vtpk_report, pdf_report])
+def log_master_layers(source_dict, other_sources):
+	master_layers = list(iter_master_layers(source_dict, other_sources))
+	log(f"Parsed master layer count: {len(master_layers)}")
+	for master_layer in master_layers:
+		log(
+			f"MASTER ITEM: {master_layer['source_name']} | "
+			f"{master_layer['dataset_name']} "
+		)
+	return master_layers
+
+
+
+def normalize_selection_token(value):
+	return "".join(character for character in value.lower() if character.isalnum())
+
+
+def build_aprx_selection_lookup():
+	selection_lookup = {}
+	for index, entry in enumerate(APRX_ENTRIES, start=1):
+		selection_lookup[str(index)] = entry
+		selection_lookup[normalize_selection_token(entry["selection_key"])] = entry
+		selection_lookup[normalize_selection_token(entry["label"])] = entry
+		selection_lookup[normalize_selection_token(entry["report_name"])] = entry
+	return selection_lookup
+
+
+def prompt_for_aprx_entries():
+	selection_lookup = build_aprx_selection_lookup()
+
+	while True:
+		print("\nAvailable APRX entries:")
+		for index, entry in enumerate(APRX_ENTRIES, start=1):
+			print(f"  {index}. {entry['label']} (report: {entry['report_name']})")
+
+		selection_text = input("Select APRX entries by number or label (comma-separated, Enter for all): ").strip()
+		if not selection_text:
+			return APRX_ENTRIES
+
+		selected_indexes = []
+		invalid_tokens = []
+		for token in [part.strip() for part in selection_text.split(",") if part.strip()]:
+			selected_entry = selection_lookup.get(token)
+			if not selected_entry:
+				selected_entry = selection_lookup.get(normalize_selection_token(token))
+			if not selected_entry:
+				invalid_tokens.append(token)
+				continue
+			selected_index = APRX_ENTRIES.index(selected_entry)
+			if selected_index not in selected_indexes:
+				selected_indexes.append(selected_index)
+
+		if invalid_tokens:
+			print(f"Invalid selection: {', '.join(invalid_tokens)}")
+			print("Enter 1..n, a stable label, or press Enter to select all entries.")
+			continue
+
+		if not selected_indexes:
+			print("No valid APRX entries were selected. Try again.")
+			continue
+
+		return [APRX_ENTRIES[index] for index in selected_indexes]
+
+
+def build_layer_lists(selected_entries):
+	log("\n Building layer lists from selected APRX documents...")
+	report_items = []
+
+	for entry in selected_entries:
+		log(f"{entry['label']} selected for layer list collection")
+		report = collect_layers_from_aprx(entry["aprx_path"], entry["map_name"], entry["label"])
+		write_layer_report(entry["layer_list_txt"], report[0], report[1])
+		log(f"{entry['report_name']} written to: {entry['layer_list_txt']}")
+		report_items.append(report)
+
+	master_source_dict, master_other_sources = merge_layer_reports(report_items)
 	write_layer_report(MASTER_LAYER_LIST_TXT, master_source_dict, master_other_sources)
 	log(f"\n Master layer list written to: {MASTER_LAYER_LIST_TXT}")
 
@@ -635,7 +767,9 @@ def build_copy_items(master_source_dict, master_other_sources):
 
 
 def copy_master_layers_from_file():
-	master_source_dict, master_other_sources = parse_layer_report(MASTER_LAYER_LIST_TXT)
+	master_source_dict, master_other_sources = normalize_layer_report_file(MASTER_LAYER_LIST_TXT)
+	log(f"Normalized master layer list: {MASTER_LAYER_LIST_TXT}")
+	log_master_layers(master_source_dict, master_other_sources)
 	status = load_status()
 
 	if not arcpy.Exists(TARGET_GDB):
@@ -789,7 +923,8 @@ if __name__ == "__main__":
 		log(f"Run log file: {ACTIVE_LOG_FILE}")
 		log_storage_location("Target GDB", TARGET_GDB)
 
-		build_layer_lists()
+		selected_entries = prompt_for_aprx_entries()
+		build_layer_lists(selected_entries)
 		pause_for_master_list_review()
 
 		run_failed = copy_master_layers_from_file()
