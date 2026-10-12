@@ -1,25 +1,20 @@
 '''
 PURPOSE:
-The purpose of this script is to consolidate the layer-list, data-copy, status-tracking,
-and optional cleaning workflows into one repeatable process. It reads selected APRX
-documents, writes layer-list reports, writes a master layer list without duplicate
-datasets, pauses so the user can review that master list, then copies the listed SDE
-datasets to a local file geodatabase.
+Consolidate APRX layer-list reporting, master-list deduplication, SDE-to-GDB copying, status tracking, and optional GDB cleanup 
+into one repeatable, resumable workflow.
 
 SET UP:
-1. Update the APRX configuration list below, especially APRX paths, output paths,
-	target GDB, log path, and SDE connection paths.
-2. This script checks all maps in the selected APRX documents.
-3. Run in an ArcGIS Pro Python environment where ArcPy is available.
-4. Set RUN_CLEANUP to True if the target GDB should be cleaned after copying.
+1. Update the output folder, target GDB, log/status paths, APRX entries, and source SDE connection paths in the configuration section. 
+2. Make sure each APRX entry has the correct map_name IF YOU ONLY WANT ONE map processed otherwise do not adjust.
+3. Run the script in an ArcGIS Pro Python environment with ArcPy available.
+4. Set RUN_CLEANUP to True if you want the target GDB to be cleaned after copying.
 
 RESULTS:
-- Creates selected APRX layer list files and one master layer list for copy, without
-	duplicate source datasets
-- Pauses after creating the master list so the user can review it before copying.
-- Creates the target GDB if it does not exist.
-- Copies master-list datasets from source SDE connections to the target GDB.
-- Tracks copy status in JSON and writes detailed timestamped logs.
+- Creates one text layer list per selected APRX plus a deduplicated master layer list for copying. 
+- Prompts the user to review the master list before copying. 
+- Creates the target GDB if it does not already exist. 
+- Copies the listed datasets into the local GDB, with retries, logging, and status tracking. 
+- Optionally cleans the target GDB after the copy is complete.
 '''
 
 import arcpy
@@ -35,7 +30,7 @@ from collections import defaultdict
 # Configuration - Update these paths and settings as needed
 # ============================================================
 OUTPUT_FOLDER = r"I:\2026_Basemap_Data_forVTPKandPDFs\OCT_2026_DataCopy"
-RUN_CLEANUP = False      # Enable/disable post-copy cleanup True or False
+RUN_CLEANUP = True      # Enable/disable post-copy cleanup True or False
 
 MASTER_LAYER_LIST_TXT = os.path.join(OUTPUT_FOLDER, "MASTER_layers_list_for_copy.txt")
 
@@ -850,6 +845,36 @@ def get_field_signature(dataset_path):
 	return field_signature
 
 
+def normalize_field_signature(fields):
+	normalized_fields = []
+	for field in fields or []:
+		field_name = (field.get("name") or "").lower()
+		field_type = field.get("type")
+
+		if field_type == "OID":
+			field_name = "__oid__"
+		elif field_type == "Geometry":
+			field_name = "__shape__"
+
+		normalized_fields.append({
+			"name": field_name,
+			"type": field_type,
+			"length": field.get("length"),
+		})
+
+	return sorted(
+		normalized_fields,
+		key=lambda field: (field["name"], field["type"], field["length"]),
+	)
+
+
+def copy_validation_matches(source_signature, target_signature):
+	if not source_signature or not target_signature:
+		return False
+
+	return source_signature.get("row_count") == target_signature.get("row_count")
+
+
 def get_dataset_signature(dataset_path, row_count=None):
 	if not arcpy.Exists(dataset_path):
 		return None
@@ -910,6 +935,14 @@ def build_item_info(master_layer):
 	}
 
 
+def build_item_info_from_stub(item_stub):
+	row_count = get_row_count(item_stub["src"])
+	item_info = dict(item_stub)
+	item_info["row_count"] = row_count
+	item_info["source_signature"] = get_dataset_signature(item_stub["src"], row_count)
+	return item_info
+
+
 def destination_is_current(item_info):
 	if not arcpy.Exists(item_info["dest"]):
 		return False, None
@@ -917,7 +950,7 @@ def destination_is_current(item_info):
 	try:
 		target_row_count = get_row_count(item_info["dest"])
 		target_signature = get_dataset_signature(item_info["dest"], target_row_count)
-		return target_signature == item_info["source_signature"], target_signature
+		return copy_validation_matches(item_info["source_signature"], target_signature), target_signature
 	except Exception as exc:
 		log(f"WARNING: Existing target could not be inspected and will be recopied: {item_info['dest']} | {get_error_message(exc)}")
 		arcpy.ClearWorkspaceCache_management()
@@ -986,26 +1019,15 @@ def copy_item(item_info):
 
 
 def build_copy_items(master_source_dict, master_other_sources, status):
-	log("\n Inspecting source datasets and calculating row counts...")
+	log("\n Preparing copy queue from the master layer list...")
 	items = []
-	failed_inspection = []
 
-	for master_layer in iter_master_layers(master_source_dict, master_other_sources):
+	for queue_index, master_layer in enumerate(iter_master_layers(master_source_dict, master_other_sources)):
 		item_stub = build_item_stub(master_layer)
 		prior_record = status["items"].get(item_stub["src"], {})
-		prior_status = normalize_copy_status_value(prior_record.get("status"))
-		update_copy_item_status(status, item_stub, "inspecting", error="")
-		try:
-			item_info = build_item_info(master_layer)
-			item_info["prior_status"] = prior_status
-			update_copy_item_status(status, item_info, "ready_to_copy", error="")
-			items.append(item_info)
-		except Exception as exc:
-			error_message = get_error_message(exc)
-			update_copy_item_status(status, item_stub, "failed", error=error_message)
-			failed_inspection.append((master_layer, error_message))
-			log(f"FAILED INSPECTION: {master_layer['source_name']} | {master_layer['dataset_name']} | {error_message}")
-			arcpy.ClearWorkspaceCache_management()
+		item_stub["prior_status"] = normalize_copy_status_value(prior_record.get("status"))
+		item_stub["queue_index"] = queue_index
+		items.append(item_stub)
 
 	def sort_key(item):
 		prior_status = item.get("prior_status", "pending")
@@ -1017,10 +1039,10 @@ def build_copy_items(master_source_dict, master_other_sources, status):
 			priority = 3
 		else:
 			priority = 2
-		return (priority, -item["row_count"], item["name"])
+		return (priority, item["queue_index"], item["name"])
 
 	items.sort(key=sort_key)
-	return items, failed_inspection
+	return items
 
 
 def copy_master_layers_from_file(status):
@@ -1032,29 +1054,43 @@ def copy_master_layers_from_file(status):
 		log(f"\n Creating target gdb: {TARGET_GDB}")
 		arcpy.CreateFileGDB_management(os.path.dirname(TARGET_GDB), os.path.basename(TARGET_GDB))
 
-	items, failed_inspection = build_copy_items(master_source_dict, master_other_sources, status)
+	items = build_copy_items(master_source_dict, master_other_sources, status)
 
 	total_items = len(items)
 	log(f"Total items to process: {total_items}")
-	log("Using 1 worker. Interrupted items are resumed first, then failed items, then remaining datasets by size.")
+	log("Using 1 worker. Interrupted items are resumed first, then failed items, then remaining datasets in master-list order.")
 
 	completed = 0
 	copied = 0
 	skipped = 0
-	failed = len(failed_inspection)
+	failed = 0
 	run_start = time.time()
 
 	print("\n Copying items...")
 
-	for item in items:
+	for item_stub in items:
 		completed += 1
 		progress_bar(completed, total_items)
 
-		prior_status = item.get("prior_status", "pending")
+		prior_status = item_stub.get("prior_status", "pending")
 		if prior_status in COPY_RECOVERY_STATES:
-			log(f"RESUMING INTERRUPTED COPY: {item['name']} | prior_status={prior_status}")
+			log(f"RESUMING INTERRUPTED COPY: {item_stub['name']} | prior_status={prior_status}")
 		elif prior_status == "failed":
-			log(f"RETRYING FAILED COPY: {item['name']}")
+			log(f"RETRYING FAILED COPY: {item_stub['name']}")
+
+		update_copy_item_status(status, item_stub, "inspecting", error="")
+		try:
+			item = build_item_info_from_stub(item_stub)
+			item["prior_status"] = prior_status
+			item["queue_index"] = item_stub.get("queue_index")
+			update_copy_item_status(status, item, "ready_to_copy", error="")
+		except Exception as exc:
+			error_message = get_error_message(exc)
+			failed += 1
+			update_copy_item_status(status, item_stub, "failed", error=error_message)
+			log(f"FAILED INSPECTION: {item_stub['source_name']} | {item_stub['dataset_name']} | {error_message}")
+			arcpy.ClearWorkspaceCache_management()
+			continue
 
 		is_current, target_signature = destination_is_current(item)
 		if is_current:
@@ -1075,10 +1111,9 @@ def copy_master_layers_from_file(status):
 		log(f"\nSTARTING COPY: {item['name']} ({completed}/{total_items}) | rows={item['row_count']:,}")
 		result = copy_item(item)
 		elapsed = format_elapsed(result["elapsed"])
-		if result["success"] and result["target_signature"] != item["source_signature"]:
+		if result["success"] and not copy_validation_matches(item["source_signature"], result["target_signature"]):
 			result["success"] = False
-			result["error"] = "Post-copy validation failed: target signature does not match source."
-			result["target_signature"] = None
+			result["error"] = "Post-copy validation failed: target row count does not match source."
 
 		if result["success"]:
 			copied += 1
