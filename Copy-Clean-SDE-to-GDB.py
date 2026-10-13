@@ -40,6 +40,8 @@ STATUS_FILE = os.path.join(OUTPUT_FOLDER, "copy_status.json")
 
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 3          # seconds between retries
+STATUS_SAVE_ATTEMPTS = 12
+STATUS_SAVE_DELAY = 0.5  # seconds between status-file replace retries
 
 STATUS_SCHEMA_VERSION = 2
 COPY_COMPLETE_STATES = {"copied_verified", "skipped_current"}
@@ -49,6 +51,7 @@ CLEANUP_RECOVERY_STATES = {"cleanup_pending", "cleaning"}
 
 ACTIVE_RUN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 ACTIVE_RUN_STARTED_AT = datetime.datetime.now().isoformat()
+ACTIVE_PROCESS_ID = os.getpid()
 
 APRX_ENTRIES = [
 	{
@@ -266,10 +269,29 @@ def load_status():
 def save_status(status):
 	status = normalize_status_manifest(status)
 	ensure_parent_dir(STATUS_FILE)
-	temp_file = f"{STATUS_FILE}.tmp"
+
+	temp_file = f"{STATUS_FILE}.{ACTIVE_RUN_ID}.{ACTIVE_PROCESS_ID}.tmp"
 	with open(temp_file, "w", encoding="utf-8") as status_handle:
 		json.dump(status, status_handle, indent=2, sort_keys=True)
-	os.replace(temp_file, STATUS_FILE)
+		status_handle.flush()
+		os.fsync(status_handle.fileno())
+
+	last_error = None
+	for attempt in range(1, STATUS_SAVE_ATTEMPTS + 1):
+		try:
+			os.replace(temp_file, STATUS_FILE)
+			return True
+		except PermissionError as exc:
+			last_error = exc
+			if attempt < STATUS_SAVE_ATTEMPTS:
+				time.sleep(STATUS_SAVE_DELAY * attempt)
+		except OSError as exc:
+			last_error = exc
+			if attempt < STATUS_SAVE_ATTEMPTS:
+				time.sleep(STATUS_SAVE_DELAY * attempt)
+
+	print(f"WARNING: Could not update status file after retries: {STATUS_FILE} | {last_error}", file=sys.stderr)
+	return False
 
 
 def start_run(status):
